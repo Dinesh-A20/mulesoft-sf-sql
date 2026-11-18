@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:os="http://www.mulesoft.org/schema/mule/os"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:batch="http://www.mulesoft.org/schema/mule/batch"
+      xsi:schemaLocation="
+          http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+          http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd
+          http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+          http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+          http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+          http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd">
+
+    <!-- Flow 1: Scheduler and watermark retrieval -->
+    <flow name="scheduled-account-sync-flow">
+        <scheduler>
+            <scheduling-strategy>
+                <fixed-frequency frequency="${scheduler.frequency}"
+                                 timeUnit="MINUTES"
+                                 startDelay="${scheduler.startDelay}"/>
+            </scheduling-strategy>
+        </scheduler>
+        <logger level="INFO"
+                message="Account sync flow start | correlationId=#[correlationId]"/>
+        <flow-ref name="watermark-retrieval-flow"/>
+        <set-variable variableName="runStartDate"
+                      value="#[now() as String {format: &quot;yyyy-MM-dd&apos;T&apos;HH:mm:ss&apos;Z&apos;&quot;}]"/>
+        <flow-ref name="salesforce-query-flow"/>
+        <error-handler ref="global-error-handler"/>
+    </flow>
+
+    <!-- Flow 2: Salesforce query -->
+    <flow name="salesforce-query-flow">
+        <set-variable variableName="salesforceQuery"
+                      value="#['SELECT Id, Name, Type, Industry, Phone, Website, BillingCity, BillingCountry, LastModifiedDate FROM Account WHERE LastModifiedDate &gt;= ' ++ '\'' ++ (vars.watermarkDate as String {format: &quot;yyyy-MM-dd&apos;T&apos;HH:mm:ss&apos;Z&apos;&quot;}) ++ '\'']"/>
+        <logger level="INFO"
+                message="Salesforce connection/query start | correlationId=#[correlationId] | watermark=#[vars.watermarkDate]"/>
+        <salesforce:query config-ref="Salesforce_Config">
+            <salesforce:salesforce-query>#[vars.salesforceQuery]</salesforce:salesforce-query>
+        </salesforce:query>
+        <set-variable variableName="recordsRetrieved"
+                      value="#[sizeOf(payload default [])]"/>
+        <logger level="INFO"
+                message="Records retrieved from Salesforce | correlationId=#[correlationId] | recordCount=#[vars.recordsRetrieved]"/>
+        <choice>
+            <when expression="#[vars.recordsRetrieved == 0]">
+                <logger level="INFO"
+                        message="No Salesforce Account records returned | correlationId=#[correlationId]"/>
+                <flow-ref name="watermark-update-flow"/>
+                <flow-ref name="success-logging-flow"/>
+            </when>
+            <otherwise>
+                <batch:job jobName="AccountSyncBatch"
+                           maxFailedRecords="${batch.maxFailedRecords}"
+                           blockSize="100">
+                    <batch:process-records>
+                        <batch:step name="TransformAccounts">
+                            <ee:transform>
+                                <ee:message>
+                                    <ee:set-payload resource="dw/transform-account.dwl"/>
+                                </ee:message>
+                            </ee:transform>
+                            <logger level="DEBUG"
+                                    message="Transformation complete | correlationId=#[correlationId] | accountId=#[payload.ACCOUNT_ID default '']"/>
+                        </batch:step>
+                        <batch:step name="UpsertAccounts"
+                                    acceptPolicy="NO_FAILURES">
+                            <db:insert config-ref="PostgreSQL_Config">
+                                <db:sql><![CDATA[
+                                    INSERT INTO ACCOUNT_MASTER (
+                                        ACCOUNT_ID,
+                                        ACCOUNT_NAME,
+                                        ACCOUNT_TYPE,
+                                        INDUSTRY,
+                                        PHONE,
+                                        WEBSITE,
+                                        BILLING_CITY,
+                                        BILLING_COUNTRY,
+                                        LAST_MODIFIED
+                                    )
+                                    VALUES (
+                                        :accountId,
+                                        :accountName,
+                                        :accountType,
+                                        :industry,
+                                        :phone,
+                                        :website,
+                                        :billingCity,
+                                        :billingCountry,
+                                        :lastModified
+                                    )
+                                    ON CONFLICT (ACCOUNT_ID)
+                                    DO UPDATE SET
+                                        ACCOUNT_NAME = EXCLUDED.ACCOUNT_NAME,
+                                        ACCOUNT_TYPE = EXCLUDED.ACCOUNT_TYPE,
+                                        INDUSTRY = EXCLUDED.INDUSTRY,
+                                        PHONE = EXCLUDED.PHONE,
+                                        WEBSITE = EXCLUDED.WEBSITE,
+                                        BILLING_CITY = EXCLUDED.BILLING_CITY,
+                                        BILLING_COUNTRY = EXCLUDED.BILLING_COUNTRY,
+                                        LAST_MODIFIED = EXCLUDED.LAST_MODIFIED
+                                ]]></db:sql>
+                                <db:input-parameters><![CDATA[#[{
+                                    accountId: payload.ACCOUNT_ID,
+                                    accountName: payload.ACCOUNT_NAME,
+                                    accountType: payload.ACCOUNT_TYPE,
+                                    industry: payload.INDUSTRY,
+                                    phone: payload.PHONE,
+                                    website: payload.WEBSITE,
+                                    billingCity: payload.BILLING_CITY,
+                                    billingCountry: payload.BILLING_COUNTRY,
+                                    lastModified: payload.LAST_MODIFIED
+                                }]]]></db:input-parameters>
+                            </db:insert>
+                        </batch:step>
+                        <batch:step name="RecordSuccessFailureCounts"
+                                    acceptPolicy="ALL">
+                            <logger level="INFO"
+                                    message="Batch record processed | correlationId=#[correlationId]"/>
+                        </batch:step>
+                    </batch:process-records>
+                    <batch:on-complete>
+                        <choice>
+                            <when expression="#[payload.failedRecords == 0]">
+                                <flow-ref name="watermark-update-flow"/>
+                                <flow-ref name="success-logging-flow"/>
+                            </when>
+                            <otherwise>
+                                <logger level="ERROR"
+                                        message="Batch load completed with failures | correlationId=#[correlationId] | total=#[payload.totalRecords] | successful=#[payload.successfulRecords] | failed=#[payload.failedRecords] | failedPayload=#[payload as String default '']"/>
+                            </otherwise>
+                        </choice>
+                    </batch:on-complete>
+                </batch:job>
+            </otherwise>
+        </choice>
+    </flow>
+
+    <!-- Flow 5: Object Store watermark update -->
+    <flow name="watermark-retrieval-flow">
+        <os:retrieve objectStore="Account_Watermark_ObjectStore"
+                     key="lastSuccessfulRunDate"
+                     target="watermarkDate">
+            <os:default-value><![CDATA[#['2000-01-01T00:00:00Z']]]></os:default-value>
+        </os:retrieve>
+        <logger level="INFO"
+                message="Watermark retrieved | correlationId=#[correlationId] | watermark=#[vars.watermarkDate]"/>
+    </flow>
+
+    <flow name="watermark-update-flow">
+        <os:store objectStore="Account_Watermark_ObjectStore"
+                  key="lastSuccessfulRunDate"
+                  failOnNullValue="true">
+            <os:value>#[vars.runStartDate]</os:value>
+        </os:store>
+        <logger level="INFO"
+                message="Watermark updated | correlationId=#[correlationId] | watermark=#[vars.runStartDate]"/>
+    </flow>
+
+    <!-- Flow 6: Success logging -->
+    <flow name="success-logging-flow">
+        <logger level="INFO"
+                message="Database load complete | correlationId=#[correlationId] | total=#[payload.totalRecords] | successful=#[payload.successfulRecords] | failed=#[payload.failedRecords]"/>
+    </flow>
+</mule>

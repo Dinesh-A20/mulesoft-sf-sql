@@ -1,0 +1,28 @@
+salesforce:
+  username: "${secure::salesforce.username}"
+  password: "${secure::salesforce.password}"
+  token: "${secure::salesforce.token}"
+  consumerKey: "${secure::salesforce.consumerKey}"
+  consumerSecret: "${secure::salesforce.consumerSecret}"
+  reconnect:
+    count: "5"
+    frequencyMillis: "10000"
+
+database:
+  host: "qa-postgres.internal"
+  port: "5432"
+  name: "integration"
+  username: "${secure::database.username}"
+  password: "${secure::database.password}"
+  reconnect:
+    count: "5"
+    frequencyMillis: "10000"
+
+scheduler:
+  frequency: "15"
+  timeUnit: "MINUTES"
+  startDelay: "1"
+
+batch:
+  maxFailedRecords: "-1"
+  maxConsecutiveErrors: "10"

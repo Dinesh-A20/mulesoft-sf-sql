@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xsi:schemaLocation="
+          http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+          http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+          http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+          http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd
+          http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+          http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <munit:config name="SalesforceAccountSyncMUnitConfig"/>
+
+    <munit:test name="successful-load-test"
+                description="Salesforce Account is transformed and upserted successfully">
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:query">
+                <munit-tools:then-return>
+                    <munit-tools:payload><![CDATA[#[[{
+                        Id: "001XX000003DHSF",
+                        Name: "Acme Corporation",
+                        "Type": "Customer",
+                        Industry: "Technology",
+                        Phone: "+1-555-0100",
+                        Website: "https://www.acme.example",
+                        BillingCity: "Austin",
+                        BillingCountry: "United States",
+                        LastModifiedDate: "2026-11-18T10:00:00.000Z"
+                    }]]]]></munit-tools:payload>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="db:insert">
+                <munit-tools:then-return>
+                    <munit-tools:payload><![CDATA[#[{affectedRows: 1}]]]></munit-tools:payload>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <set-variable variableName="watermarkDate"
+                          value="#['2000-01-01T00:00:00Z']"/>
+            <set-variable variableName="runStartDate"
+                          value="#['2026-11-18T14:28:44Z']"/>
+            <flow-ref name="salesforce-query-flow"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that
+                    expression="#[vars.recordsRetrieved]"
+                    is="#[MunitTools::equalTo(1)]"/>
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="no-records-returned-test"
+                description="A Salesforce query with no records completes without database load">
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:query">
+                <munit-tools:then-return>
+                    <munit-tools:payload><![CDATA[#[[]]]]></munit-tools:payload>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <set-variable variableName="watermarkDate"
+                          value="#['2000-01-01T00:00:00Z']"/>
+            <flow-ref name="salesforce-query-flow"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that
+                    expression="#[vars.recordsRetrieved]"
+                    is="#[MunitTools::equalTo(0)]"/>
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="salesforce-connection-failure-test"
+                description="Salesforce connectivity failures are handled by the global error handler"
+                expectedErrorType="SALESFORCE:CONNECTIVITY">
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:query">
+                <munit-tools:then-return>
+                    <munit-tools:error
+                            errorType="SALESFORCE:CONNECTIVITY"
+                            description="Salesforce unavailable"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <set-variable variableName="watermarkDate"
+                          value="#['2000-01-01T00:00:00Z']"/>
+            <flow-ref name="salesforce-query-flow"/>
+        </munit:execution>
+    </munit:test>
+
+    <munit:test name="database-connection-failure-test"
+                description="Database connectivity failures are propagated"
+                expectedErrorType="DB:CONNECTIVITY">
+        <munit:behavior>
+            <munit-tools:mock-when processor="db:insert">
+                <munit-tools:then-return>
+                    <munit-tools:error
+                            errorType="DB:CONNECTIVITY"
+                            description="PostgreSQL unavailable"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <set-payload><![CDATA[#[{
+                ACCOUNT_ID: "001XX000003DHSF",
+                ACCOUNT_NAME: "Acme Corporation",
+                ACCOUNT_TYPE: "Customer",
+                INDUSTRY: "Technology",
+                PHONE: "+1-555-0100",
+                WEBSITE: "https://www.acme.example",
+                BILLING_CITY: "Austin",
+                BILLING_COUNTRY: "United States",
+                LAST_MODIFIED: "2026-11-18T10:00:00Z"
+            }]]]></set-payload>
+            <db:insert config-ref="PostgreSQL_Config">
+                <db:sql>INSERT INTO ACCOUNT_MASTER (ACCOUNT_ID) VALUES (:accountId)</db:sql>
+                <db:input-parameters><![CDATA[#[{accountId: payload.ACCOUNT_ID}]]]></db:input-parameters>
+            </db:insert>
+        </munit:execution>
+    </munit:test>
+
+    <munit:test name="transformation-validation-test"
+                description="Valid Salesforce fields map to database field names">
+        <munit:execution>
+            <set-payload><![CDATA[#[{
+                Id: "001XX000003DHSF",
+                Name: "Acme Corporation",
+                "Type": "Customer",
+                Industry: "Technology",
+                Phone: "+1-555-0100",
+                Website: "https://www.acme.example",
+                BillingCity: "Austin",
+                BillingCountry: "United States",
+                LastModifiedDate: "2026-11-18T10:00:00.000Z"
+            }]]]></set-payload>
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload resource="dw/validate-and-transform-account.dwl"/>
+                </ee:message>
+            </ee:transform>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that
+                    expression="#[payload.ACCOUNT_ID]"
+                    is="#[MunitTools::equalTo('001XX000003DHSF')]"/>
+            <munit-tools:assert-that
+                    expression="#[payload.ACCOUNT_NAME]"
+                    is="#[MunitTools::equalTo('Acme Corporation')]"/>
+        </munit:validation>
+    </munit:test>
+</mule>

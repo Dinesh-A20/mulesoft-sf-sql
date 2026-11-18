@@ -1,0 +1,31 @@
+{
+  "applicationName": "salesforce-to-sql-integration",
+  "muleVersion": "4.6.0",
+  "environment": "Sandbox",
+  "region": "us-east-1",
+  "workers": {
+    "type": "MICRO",
+    "amount": 1
+  },
+  "persistentQueues": false,
+  "objectStoreV2": true,
+  "properties": {
+    "env": "prod",
+    "mule.secure.key": "${MULE_SECURE_KEY}",
+    "anypoint.platform.client_id": "${ANYPOINT_PLATFORM_CLIENT_ID}",
+    "anypoint.platform.client_secret": "${ANYPOINT_PLATFORM_CLIENT_SECRET}"
+  },
+  "deploymentConfiguration": {
+    "javaVersion": "17",
+    "logLevels": [
+      {
+        "package": "org.mule",
+        "level": "INFO"
+      },
+      {
+        "package": "com.mulesoft",
+        "level": "INFO"
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "minMuleVersion": "4.6.0",
+  "javaSpecificationVersions": ["17"],
+  "secureProperties": [
+    "mule.secure.key",
+    "salesforce.username",
+    "salesforce.password",
+    "salesforce.token",
+    "salesforce.consumerKey",
+    "salesforce.consumerSecret",
+    "database.username",
+    "database.password"
+  ],
+  "configs": [
+    "src/main/mule/global-config.xml",
+    "src/main/mule/salesforce-account-sync.xml"
+  ]
+}
